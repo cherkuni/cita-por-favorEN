@@ -2,7 +2,7 @@
 // @name         Cita Por Favor — TIE Fingerprints, Card Pickup & NIE Checker (Barcelona, EN/RU)
 // @name:ru      Cita Por Favor — huellas + tarjetas + recogida TIE + asignación NIE (Barcelona, вся провинция)
 // @namespace    cita-catcher.local
-// @version      9.25.1
+// @version      9.25.5
 // @description  Local browser assistant for checking Barcelona Extranjería appointments (toma de huellas, expedición de tarjetas, recogida TIE, asignación NIE). Autofills applicant details, supports Cl@ve / Digital Certificate, and alerts via voice when slots are found. Bilingual EN/RU UI.
 // @description:ru Cita Por Favor проверяет ситы по провинции Барселона («Cualquier oficina» — вся провинция, или офисы, выбранные галочками на панели): вкладка сама проверяет наличие сит на toma de huellas, expedición de tarjetas, recogida de tarjeta (получение готовой TIE) и asignación de NIE (первичное назначение номера), при находке заполняет форму и зовёт голосом компьютера — за человеком только SMS-код и Confirmar. Ритм задаётся отдельными пресетами для часовых окон и интервального режима; свои пресеты можно сохранять. Без обхода защиты: реальный браузер, человеческий темп, backoff при блокировке. Личные данные вводятся через панель (кнопка «Изменить мои данные») и хранятся только в Tampermonkey. При входе через Cl@ve можно записать себя или другого человека.
 // @match        https://icp.administracionelectronica.gob.es/*
@@ -285,8 +285,8 @@
     // только на мгновенном (<1 с на всё) заполнении. Паузы 0.5–1.0 с: весь ввод
     // ~3 с вместо ~6. Контроль: в журнале появился «бот-блок 0018» — вернуть
     // 0.9/1.9 (как в v7.24) и сказать ИИ-сессии.
-    contactFillMinSec: 0.5,
-    contactFillMaxSec: 1.0,
+    contactFillMinSec: 0.9,
+    contactFillMaxSec: 1.9,
     maxConsecutiveBlocks: 5,     // после стольких WAF-блоков (близких по времени) — полная остановка
     blockDecayMin: 60,           // блоки в пределах N мин считаются подряд (backoff растёт);
                                  // после чистого промежутка >N мин счётчик обнуляется
@@ -336,7 +336,7 @@
     windowMin: 11,                // 5 за 11 мин (не 10) — запас от порога WAF
     activeFrom: 6,                // работать с часа (0 = ночью не спать)
     activeTo: 23,                 // …до часа (24 = ночью не спать)
-    boostSec: 60,                 // форсаж (галочка на панели): интервал проверки, сек (±15%)
+    boostSec: 145,                // форсаж (галочка на панели): интервал проверки, сек (±15%, min ~123s → ≤5 проверок за 11 мин)
     lostRetryMinSec: 5,           // слоты сорвались (SLOTS_LOST): сорванная бронь часто
     lostRetryMaxSec: 12,          // СРАЗУ возвращается — перепроверяем почти мгновенно, а не
                                   // по обычному ритму. Потолок windowMin обходим сознательно:
@@ -420,7 +420,13 @@
       // Старые настройки были только интервальными: не меняем их молча.
       RUN = Object.assign({ preset: 'Рекомендованные часовые окна' }, RUN_DEFAULTS, saved);
       if (!saved.mode) RUN.mode = 'interval';
+      // One-time migration: bump unsafe boostSec (<145s) to 145s default so continuous Boost stays ≤5 checks / 11 min
+      if (!store.get('ck_boostSafeMigrated', '') && RUN.boostSec < 145) {
+        RUN.boostSec = 145;
+        store.set('ck_run', JSON.stringify(RUN));
+      }
     }
+    store.set('ck_boostSafeMigrated', '1');
   } catch (e) {}
   delete RUN.boost; delete RUN.boostMin; // v9.0: авто-форсаж ушёл — не тащить ключи в новые сохранения
   // ==========================================
@@ -2904,11 +2910,13 @@
           SS.set('clavePending', String(Date.now()));
           // Cl@ve уводит на clave.gob.es — sessionStorage там теряется.
           // Дублируем состояние в localStorage, чтобы возобновиться по возврату.
-          localStorage.setItem('ck_claveResume', JSON.stringify({
+          const resumePayload = JSON.stringify({
             startUrl: SS.get('startUrl') || DEFAULT_START,
             tramIdx: SS.get('tramIdx') || '0', ts: Date.now(),
             driver: onceOnly() ? 'once' : 'rhythm', // v9.0: чем вернуться — разовой или ритмом
-          }));
+          });
+          localStorage.setItem('ck_claveResume', resumePayload);
+          store.set('ck_claveResumeGM', resumePayload);
           // флаг для скрипта на pasarela.clave.gob.es (GM-хранилище — общее для доменов)
           store.set('ck_claveFlow', String(Date.now()));
           // «con Cl@ve», но не «sin Cl@ve»
@@ -3063,7 +3071,8 @@
             pick.kind + (selKeys.length ? L(' (не из выбранных)', ' (any-office fallback)') : '')) +
             L(' офис из ', ' office out of ') + opts.length + '…', '#7CFC00');
           selectOption(idSede, pick.opt);
-          setTimeout(() => { if (!stepMode()) clickBtn('#btnSiguiente', 'siguiente'); }, 700);
+          const officeWaitMs = Math.round(1400 + Math.random() * 800); // 1.4–2.2s human pace so F5 WAF doesn't block acVerFormulario
+          setTimeout(() => { if (!stepMode()) clickBtn('#btnSiguiente', 'siguiente'); }, officeWaitMs);
         }
       }
       return;
@@ -3114,7 +3123,8 @@
         snapOnce('slot', st); // выбранный слот — в снимки (что именно взяли)
         slot.checked = true;
         slot.dispatchEvent(new Event('change', { bubbles: true }));
-        setTimeout(() => { if (!stepMode()) clickBtn('#btnSiguiente', 'siguiente'); }, 700);
+        const slotWaitMs = Math.round(1400 + Math.random() * 800); // 1.4–2.2s human pace so F5 WAF doesn't block slot submit
+        setTimeout(() => { if (!stepMode()) clickBtn('#btnSiguiente', 'siguiente'); }, slotWaitMs);
       }
       return;
     }
@@ -3176,15 +3186,28 @@
   // Возврат с авторизации Cl@ve (clave.gob.es теряет sessionStorage) —
   // восстанавливаем состояние проверки из localStorage, если оно свежее.
   function restoreClaveSession() {
-    if (driving() || !DATA.useClave) return;
+    if (!DATA.useClave) return;
+    // Also check GM store in case we bounced back from a Cl@ve SAML error page
     let r = null;
-    try { r = JSON.parse(localStorage.getItem('ck_claveResume') || 'null'); } catch (e) {}
+    let gmR = null;
+    try { gmR = JSON.parse(store.get('ck_claveResumeGM', 'null') || 'null'); } catch (e) {}
+    try { r = JSON.parse(localStorage.getItem('ck_claveResume') || 'null') || gmR; } catch (e) { r = gmR; }
+    store.set('ck_claveResumeGM', '');
+    const samlErrCount = (gmR && gmR.samlErr) ? gmR.samlErr : 0;
+    if (samlErrCount) {
+      recordResult('SITE_ERROR', L('ошибка SAML Cl@ve №' + samlErrCount + '/3 — перезапуск', 'Cl@ve SAML error #' + samlErrCount + '/3 — restarted'));
+    }
+    if (driving()) return;
     if (r && Date.now() - r.ts < 15 * 60000) {
       // v9.0: возобновляем тем же водителем, с которым ушли на Cl@ve
       if (r.driver === 'once') SS.set('once', '1'); else SS.set('on', '1');
       if (r.startUrl) SS.set('startUrl', r.startUrl);
       SS.set('tramIdx', r.tramIdx || '0');
-      SS.set('clavePending', String(Date.now()));
+      if (samlErrCount) {
+        SS.del('clavePending'); // SAML failed: start cleanly from Step 1
+      } else {
+        SS.set('clavePending', String(Date.now()));
+      }
     } else if (r) {
       localStorage.removeItem('ck_claveResume'); // протухло
     }
@@ -3214,8 +3237,43 @@
     b.textContent = '🔐 cita: ' + msg;
     b.style.color = color || '#fff';
   }
+  function isClaveErrorPage() {
+    const txt = (document.body ? document.body.innerText : '');
+    return /invalid session for the saml request|se ha producido un error|reint[eé]ntelo de nuevo m[aá]s tarde/i.test(txt);
+  }
+  function recoverFromClaveError() {
+    const flowAt = parseInt(store.get('ck_claveFlow', '0'), 10);
+    // Only auto-redirect if the checker actively initiated this Cl@ve flow within the last 10 min
+    if (!flowAt || Date.now() - flowAt > 10 * 60000) {
+      claveBadge(L('ошибка SAML Cl@ve (проверка не активна)', 'Cl@ve SAML error (checker not active)'), '#ff8888');
+      return true;
+    }
+    let errs = parseInt(store.get('ck_claveSamlErrs', '0'), 10);
+    const lastErrAt = parseInt(store.get('ck_claveSamlErrAt', '0'), 10);
+    if (Date.now() - lastErrAt > 15 * 60000) errs = 0; // reset counter after 15 min without SAML errors
+    errs++;
+    store.set('ck_claveSamlErrs', String(errs));
+    store.set('ck_claveSamlErrAt', String(Date.now()));
+    if (errs > 3) {
+      claveBadge(L('⛔ ошибка SAML Cl@ve 3 раза подряд — стоп, проверь вручную', '⛔ Cl@ve SAML error 3x in a row — stopped, check manually'), '#ff8888');
+      fireAlert('stopped');
+      return true;
+    }
+    let targetUrl = DEFAULT_START;
+    try {
+      const r = JSON.parse(store.get('ck_claveResumeGM', 'null') || 'null') || {};
+      if (r.startUrl) targetUrl = r.startUrl;
+      r.samlErr = errs;
+      r.ts = Date.now();
+      store.set('ck_claveResumeGM', JSON.stringify(r));
+    } catch (e) {}
+    claveBadge(L('⚠️ ошибка SAML Cl@ve (№' + errs + '/3) — возвращаюсь на старт через 6 с…', '⚠️ Cl@ve SAML error (#' + errs + '/3) — returning to start in 6s…'), '#ffcc66');
+    setTimeout(() => { location.replace(targetUrl); }, 6000);
+    return true;
+  }
   function clavePlatformFlow() {
     if (!DATA.useClave) return; // не наш случай — молчим
+    if (isClaveErrorPage() && recoverFromClaveError()) return;
     if (!DATA.claveCert) { claveBadge(L('выбери способ входа вручную', 'select login method manually'), '#ffd27f'); return; }
     const flowAt = parseInt(store.get('ck_claveFlow', '0'), 10);
     const last = parseInt(store.get('ck_claveClicked', '0'), 10);
@@ -3227,9 +3285,15 @@
     let tries = 0;
     const timer = setInterval(() => {
       tries++;
+      if (isClaveErrorPage()) {
+        clearInterval(timer);
+        recoverFromClaveError();
+        return;
+      }
       // «Access eIdentifier» / «Acceder eIdentificador» — сертификатный путь
       if (clickClaveTile(/eidentifier|eidentificador|certificad/i)) {
         store.set('ck_claveClicked', String(Date.now()));
+        store.set('ck_claveSamlErrs', '0'); // SAML page loaded fine — reset error streak
         claveBadge(L('нажала eIdentifier ✓ — Chrome подтянет сертификат', 'clicked eIdentifier ✓ — Chrome will select certificate'), '#7CFC00');
         clearInterval(timer);
       } else if (tries > 40) { // ~20 секунд ожидания медленной страницы
