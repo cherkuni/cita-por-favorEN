@@ -2,7 +2,7 @@
 // @name         Cita Por Favor — TIE Fingerprints, Card Pickup & NIE Checker (Barcelona, EN/RU)
 // @name:ru      Cita Por Favor — huellas + tarjetas + recogida TIE + asignación NIE (Barcelona, вся провинция)
 // @namespace    cita-catcher.local
-// @version      9.25.4
+// @version      9.25.5
 // @description  Local browser assistant for checking Barcelona Extranjería appointments (toma de huellas, expedición de tarjetas, recogida TIE, asignación NIE). Autofills applicant details, supports Cl@ve / Digital Certificate, and alerts via voice when slots are found. Bilingual EN/RU UI.
 // @description:ru Cita Por Favor проверяет ситы по провинции Барселона («Cualquier oficina» — вся провинция, или офисы, выбранные галочками на панели): вкладка сама проверяет наличие сит на toma de huellas, expedición de tarjetas, recogida de tarjeta (получение готовой TIE) и asignación de NIE (первичное назначение номера), при находке заполняет форму и зовёт голосом компьютера — за человеком только SMS-код и Confirmar. Ритм задаётся отдельными пресетами для часовых окон и интервального режима; свои пресеты можно сохранять. Без обхода защиты: реальный браузер, человеческий темп, backoff при блокировке. Личные данные вводятся через панель (кнопка «Изменить мои данные») и хранятся только в Tampermonkey. При входе через Cl@ve можно записать себя или другого человека.
 // @match        https://icp.administracionelectronica.gob.es/*
@@ -285,8 +285,8 @@
     // только на мгновенном (<1 с на всё) заполнении. Паузы 0.5–1.0 с: весь ввод
     // ~3 с вместо ~6. Контроль: в журнале появился «бот-блок 0018» — вернуть
     // 0.9/1.9 (как в v7.24) и сказать ИИ-сессии.
-    contactFillMinSec: 0.5,
-    contactFillMaxSec: 1.0,
+    contactFillMinSec: 0.9,
+    contactFillMaxSec: 1.9,
     maxConsecutiveBlocks: 5,     // после стольких WAF-блоков (близких по времени) — полная остановка
     blockDecayMin: 60,           // блоки в пределах N мин считаются подряд (backoff растёт);
                                  // после чистого промежутка >N мин счётчик обнуляется
